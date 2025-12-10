@@ -107,29 +107,45 @@ void drawText(const String &s) {
   matrix.show();
 }
 
-// Right-aligned text for metric fallback rows (no icon)
-void drawRightAlignedMetricText(const String &s, uint16_t color) {
-  Serial.print("DISPLAY (metric text): ");
-  Serial.println(s);
+// Metric row with NO icon: metric name on the left, value right-aligned
+void drawMetricNameAndValue(const String &metric, const String &value, uint16_t color) {
+  String m = metric;
+  String v = value;
+  m.trim();
+  v.trim();
+
+  Serial.print("DISPLAY (metric row): ");
+  Serial.print(m);
+  Serial.print(" | ");
+  Serial.println(v);
 
   matrix.fillScreen(0);
   matrix.setTextWrap(false);
   matrix.setTextSize(1);
   matrix.setTextColor(color);
 
-  char buf[64];
-  s.substring(0, sizeof(buf) - 1).toCharArray(buf, sizeof(buf));
+  char metricBuf[32];
+  char valueBuf[16];
 
-  // Measure width
+  m.substring(0, sizeof(metricBuf) - 1).toCharArray(metricBuf, sizeof(metricBuf));
+  v.substring(0, sizeof(valueBuf) - 1).toCharArray(valueBuf, sizeof(valueBuf));
+
+  // Measure value width to right-align it
   int16_t x1, y1;
-  uint16_t w, h;
-  matrix.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
+  uint16_t wVal, hVal;
+  matrix.getTextBounds(valueBuf, 0, 0, &x1, &y1, &wVal, &hVal);
 
-  int16_t x = MATRIX_WIDTH - (int16_t)w; // right-aligned
-  int16_t y = 1;                         // same baseline as numbers
+  int16_t xValue = MATRIX_WIDTH - (int16_t)wVal; // right edge
+  int16_t y      = 1;                            // consistent baseline
 
-  matrix.setCursor(x, y);
-  matrix.print(buf);
+  // Draw metric name on the left
+  matrix.setCursor(0, y);
+  matrix.print(metricBuf);
+
+  // Draw value right-aligned
+  matrix.setCursor(xValue, y);
+  matrix.print(valueBuf);
+
   matrix.show();
 }
 
@@ -198,13 +214,9 @@ void showRow(int idx) {
     drawIconAndValue(icon_heart, matrix.Color(255, 0, 0), valStr);
   }
   else {
-    // Fallback: plain white text, right-aligned
-    String line = metric;
-    if (value.length()) {
-      line += " ";
-      line += value;
-    }
-    drawRightAlignedMetricText(line, matrix.Color(255, 255, 255));
+    // Fallback metric row:
+    // metric name on the left, value right-aligned
+    drawMetricNameAndValue(metric, value, matrix.Color(255, 255, 255));
   }
 }
 
