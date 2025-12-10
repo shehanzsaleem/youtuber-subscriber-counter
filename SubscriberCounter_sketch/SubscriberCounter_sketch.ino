@@ -8,6 +8,8 @@
 #include <FastLED.h>
 #include <FastLED_NeoMatrix.h>
 
+#include <stdlib.h>  // for strtoul
+
 #include "secrets.h"  // SECRET_SSID, SECRET_PASS, SECRET_SHEETID, SECRET_APIKEY
 
 // ─── Matrix Config for Ulanzi TC001 ──────────────────────────────────────────
@@ -27,32 +29,37 @@ FastLED_NeoMatrix matrix(
   NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG
 );
 
-// ─── Icons (8x8 bitmaps) ─────────────────────────────────────────────────────
-// 1 = lit pixel, 0 = off
-// Bits: 0bABCDEFGH where A = leftmost pixel
+// ─── Light Sensor (Ambient) ──────────────────────────────────────────────────
+#define PIN_LDR 35
 
-// 💪 Dumbbell (for GYM)
-const uint8_t icon_dumbbell[8] = {
-  0b00000000, // empty top row
-  0b11000011,
-  0b11100111,
-  0b01111110,
-  0b01111110,
-  0b11100111,
-  0b11000011,
-  0b10000001
+const int LDR_DARK   = 500;   // tune later
+const int LDR_BRIGHT = 2600;  // tune later
+
+uint8_t currentBrightness = 200;
+
+// ─── Icons (8x8 RGB bitmaps) ─────────────────────────────────────────────────
+// 💪 Dumbbell gradient (for GYM)
+const uint32_t icon_dumbbell_rgb[8][8] = {
+  {0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000},
+  {0x80D8FF, 0x80D8FF, 0x000000, 0x000000, 0x000000, 0x000000, 0x80D8FF, 0x80D8FF},
+  {0x40B0FF, 0x40B0FF, 0x40B0FF, 0x000000, 0x000000, 0x40B0FF, 0x40B0FF, 0x40B0FF},
+  {0x000000, 0x0088FF, 0x0088FF, 0x0088FF, 0x0088FF, 0x0088FF, 0x0088FF, 0x000000},
+  {0x000000, 0x0060FF, 0x0060FF, 0x0060FF, 0x0060FF, 0x0060FF, 0x0060FF, 0x000000},
+  {0x0040C0, 0x0040C0, 0x0040C0, 0x000000, 0x000000, 0x0040C0, 0x0040C0, 0x0040C0},
+  {0x002080, 0x002080, 0x000000, 0x000000, 0x000000, 0x000000, 0x002080, 0x002080},
+  {0x001040, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x001040}
 };
 
-// ❤️ Heart (for TTE)
-const uint8_t icon_heart[8] = {
-  0b00000000, // empty top row
-  0b01100110, // two bumps of the heart
-  0b11111111, // full width
-  0b11111111, // full width
-  0b01111110, // tapering down
-  0b00111100, // taper
-  0b00011000, // sharper bottom
-  0b00000000  // clean finish
+// ❤️ Heart gradient (for TTE)
+const uint32_t icon_heart_rgb[8][8] = {
+  {0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000},
+  {0x000000, 0xFF80C0, 0xFF80C0, 0x000000, 0x000000, 0xFF80C0, 0xFF80C0, 0x000000},
+  {0xFF4080, 0xFF4080, 0xFF4080, 0xFF4080, 0xFF4080, 0xFF4080, 0xFF4080, 0xFF4080},
+  {0xFF0040, 0xFF0040, 0xFF0040, 0xFF0040, 0xFF0040, 0xFF0040, 0xFF0040, 0xFF0040},
+  {0x000000, 0xFF0000, 0xFF0000, 0xFF0000, 0xFF0000, 0xFF0000, 0xFF0000, 0x000000},
+  {0x000000, 0x000000, 0xD00030, 0xD00030, 0xD00030, 0xD00030, 0x000000, 0x000000},
+  {0x000000, 0x000000, 0x000000, 0xA00020, 0xA00020, 0x000000, 0x000000, 0x000000},
+  {0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000}
 };
 
 // ─── WiFi/HTTPS ───────────────────────────────────────────────────────────────
@@ -60,10 +67,11 @@ WiFiClientSecure client;
 
 // ─── Google Sheets Settings ───────────────────────────────────────────────────
 const char* SHEET_NAME  = "LED";  // tab name
-const char* SHEET_RANGE = "A:B";  // "Metric" in col A, "Value" in col B
+// NOW: A=Metric, B=Value, C=IconCode, D=TextColor
+const char* SHEET_RANGE = "A:D";
 
-unsigned long fetch_interval_ms  = 60UL * 1000UL;  // pull fresh data every 60s
-unsigned long rotate_interval_ms = 5UL  * 1000UL;  // show next row every 5s
+unsigned long fetch_interval_ms  = 60UL * 1000UL;
+unsigned long rotate_interval_ms = 5UL  * 1000UL;
 
 unsigned long last_fetch_ms  = 0;
 unsigned long last_rotate_ms = 0;
@@ -71,6 +79,8 @@ unsigned long last_rotate_ms = 0;
 #define MAX_ROWS 32
 String metrics[MAX_ROWS];
 String valuesArr[MAX_ROWS];
+String iconCodeArr[MAX_ROWS];   // column C
+String colorCodeArr[MAX_ROWS];  // column D
 int row_count     = 0;
 int current_index = 0;
 
@@ -89,6 +99,42 @@ String buildSheetsUrl() {
   return url;
 }
 
+// Parse color strings like "0xFF0000", "#FF0000", "FF0000", "red", …
+uint16_t parseColorStringTo565(const String &colorStr, uint16_t fallback) {
+  String t = colorStr;
+  t.trim();
+  if (t.length() == 0) return fallback;
+
+  // Some simple named colors for convenience
+  if (t.equalsIgnoreCase("red"))     return matrix.Color(255,   0,   0);
+  if (t.equalsIgnoreCase("green"))   return matrix.Color(  0, 255,   0);
+  if (t.equalsIgnoreCase("blue"))    return matrix.Color(  0,   0, 255);
+  if (t.equalsIgnoreCase("white"))   return matrix.Color(255, 255, 255);
+  if (t.equalsIgnoreCase("yellow"))  return matrix.Color(255, 255,   0);
+  if (t.equalsIgnoreCase("cyan"))    return matrix.Color(  0, 255, 255);
+  if (t.equalsIgnoreCase("magenta")) return matrix.Color(255,   0, 255);
+  if (t.equalsIgnoreCase("orange"))  return matrix.Color(255, 128,   0);
+  if (t.equalsIgnoreCase("pink"))    return matrix.Color(255, 105, 180);
+
+  // Normalise hex style
+  if (t.startsWith("#")) {
+    t = "0x" + t.substring(1);
+  } else if (!t.startsWith("0x") && !t.startsWith("0X")) {
+    // if user just puts "FF0000"
+    t = "0x" + t;
+  }
+
+  const char *cstr = t.c_str();
+  char *endptr;
+  uint32_t val = (uint32_t)strtoul(cstr, &endptr, 0);
+  if (endptr == cstr) return fallback;  // parse failed
+
+  uint8_t r = (val >> 16) & 0xFF;
+  uint8_t g = (val >> 8)  & 0xFF;
+  uint8_t b =  val        & 0xFF;
+  return matrix.Color(r, g, b);
+}
+
 // Status / generic text, left-ish
 void drawText(const String &s) {
   Serial.print("DISPLAY (text): ");
@@ -102,12 +148,12 @@ void drawText(const String &s) {
   char buf[64];
   s.substring(0, sizeof(buf) - 1).toCharArray(buf, sizeof(buf));
 
-  matrix.setCursor(0, 1);  // y=1 looks nicer on 8px height
+  matrix.setCursor(0, 1);
   matrix.print(buf);
   matrix.show();
 }
 
-// Metric row with NO icon: metric name on the left, value right-aligned
+// Metric row with NO icon: metric name on left, value right-aligned, colored
 void drawMetricNameAndValue(const String &metric, const String &value, uint16_t color) {
   String m = metric;
   String v = value;
@@ -130,57 +176,55 @@ void drawMetricNameAndValue(const String &metric, const String &value, uint16_t 
   m.substring(0, sizeof(metricBuf) - 1).toCharArray(metricBuf, sizeof(metricBuf));
   v.substring(0, sizeof(valueBuf) - 1).toCharArray(valueBuf, sizeof(valueBuf));
 
-  // Measure value width to right-align it
   int16_t x1, y1;
   uint16_t wVal, hVal;
   matrix.getTextBounds(valueBuf, 0, 0, &x1, &y1, &wVal, &hVal);
 
-  int16_t xValue = MATRIX_WIDTH - (int16_t)wVal; // right edge
-  int16_t y      = 1;                            // consistent baseline
+  int16_t xValue = MATRIX_WIDTH - (int16_t)wVal;
+  int16_t y      = 1;
 
-  // Draw metric name on the left
   matrix.setCursor(0, y);
   matrix.print(metricBuf);
 
-  // Draw value right-aligned
   matrix.setCursor(xValue, y);
   matrix.print(valueBuf);
 
   matrix.show();
 }
 
-// Draw 8x8 icon on the left, and a value right-aligned on the right
-void drawIconAndValue(const uint8_t icon[8], uint16_t color, const String &value) {
-  Serial.print("DISPLAY (icon+value): ");
+// RGB 8x8 icon + right-aligned value, with colored text
+void drawRGBIconAndValue(const uint32_t icon[8][8], const String &value, uint16_t textColor) {
+  Serial.print("DISPLAY (RGB icon+value): ");
   Serial.println(value);
 
   matrix.fillScreen(0);
   matrix.setTextWrap(false);
   matrix.setTextSize(1);
-  matrix.setTextColor(color);
+  matrix.setTextColor(textColor);
 
-  // Draw 8x8 icon at far left (x=0..7)
+  // Draw RGB icon
   for (int y = 0; y < 8; y++) {
-    uint8_t row = icon[y];
     for (int x = 0; x < 8; x++) {
-      if (row & (1 << (7 - x))) { // highest bit = leftmost pixel
-        matrix.drawPixel(x, y, color);
+      uint32_t c = icon[y][x];
+      if (c != 0x000000) {
+        uint8_t r = (c >> 16) & 0xFF;
+        uint8_t g = (c >> 8)  & 0xFF;
+        uint8_t b =  c        & 0xFF;
+        matrix.drawPixel(x, y, matrix.Color(r, g, b));
       }
     }
   }
 
-  // Prepare value string
+  // Value text
   char buf[16];
   value.substring(0, sizeof(buf) - 1).toCharArray(buf, sizeof(buf));
 
-  // Measure text width
   int16_t x1, y1;
   uint16_t w, h;
   matrix.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
 
-  // Right-align the value against the far right of the 32px matrix
-  int16_t x = MATRIX_WIDTH - (int16_t)w; // right aligned
-  int16_t y = 1;                         // fixed Y so we don't only see underscores
+  int16_t x = MATRIX_WIDTH - (int16_t)w;
+  int16_t y = 1;
 
   matrix.setCursor(x, y);
   matrix.print(buf);
@@ -188,35 +232,91 @@ void drawIconAndValue(const uint8_t icon[8], uint16_t color, const String &value
   matrix.show();
 }
 
+// Parse custom icon string from column C
+bool parseIconStringToArray(const String &iconStr, uint32_t out[8][8]) {
+  for (int y = 0; y < 8; y++)
+    for (int x = 0; x < 8; x++)
+      out[y][x] = 0x000000;
+
+  if (iconStr.length() == 0) return false;
+
+  String s = iconStr;
+  s.replace("\n", " ");
+  s.replace("\r", " ");
+  s.replace("{", " ");
+  s.replace("}", " ");
+  s.replace(";", " ");
+
+  int count = 0;
+  int start = 0;
+
+  while (start >= 0 && count < 64) {
+    int comma = s.indexOf(',', start);
+    String token;
+    if (comma == -1) {
+      token = s.substring(start);
+      start = -1;
+    } else {
+      token = s.substring(start, comma);
+      start = comma + 1;
+    }
+
+    token.trim();
+    if (token.length() == 0) continue;
+
+    const char* cstr = token.c_str();
+    char* endptr;
+    uint32_t val = (uint32_t) strtoul(cstr, &endptr, 0);
+
+    if (endptr == cstr) continue;
+
+    int y = count / 8;
+    int x = count % 8;
+    out[y][x] = val;
+    count++;
+  }
+
+  return (count > 0);
+}
+
 void showRow(int idx) {
   if (idx < 0 || idx >= row_count) return;
 
-  String metric = metrics[idx];
-  String value  = valuesArr[idx];
+  String metric   = metrics[idx];
+  String value    = valuesArr[idx];
+  String iconStr  = iconCodeArr[idx];
+  String colorStr = colorCodeArr[idx];
 
-  metric.toUpperCase();
+  String metricUpper = metric;
+  metricUpper.toUpperCase();
 
-  // For icons we only care about the numeric/value string
   String valStr = value;
   valStr.trim();
+  if (valStr.length() == 0) valStr = "0";
 
-  if (valStr.length() == 0) {
-    valStr = "0";  // fallback
+  uint16_t defaultColor = matrix.Color(255, 255, 255);
+  uint16_t textColor    = parseColorStringTo565(colorStr, defaultColor);
+
+  // 1) Custom icon from column C
+  iconStr.trim();
+  if (iconStr.length() > 0) {
+    uint32_t customIcon[8][8];
+    if (parseIconStringToArray(iconStr, customIcon)) {
+      drawRGBIconAndValue(customIcon, valStr, textColor);
+      return;
+    }
   }
 
-  // Metric-based icon & colour, NO "GYM"/"TTE" text, just icon + value
-  if (metric == "GYM") {
-    // Blue dumbbell
-    drawIconAndValue(icon_dumbbell, matrix.Color(0, 0, 255), valStr);
+  // 2) Built-in icons
+  if (metricUpper == "GYM") {
+    drawRGBIconAndValue(icon_dumbbell_rgb, valStr, textColor);
   }
-  else if (metric == "TTE") {
-    // Red heart
-    drawIconAndValue(icon_heart, matrix.Color(255, 0, 0), valStr);
+  else if (metricUpper == "TTE") {
+    drawRGBIconAndValue(icon_heart_rgb, valStr, textColor);
   }
   else {
-    // Fallback metric row:
-    // metric name on the left, value right-aligned
-    drawMetricNameAndValue(metric, value, matrix.Color(255, 255, 255));
+    // 3) text-only row
+    drawMetricNameAndValue(metric, value, textColor);
   }
 }
 
@@ -262,7 +362,6 @@ bool fetchSheetData() {
     return false;
   }
 
-  // Skip header if first row is "Metric"
   int startIdx = 0;
   if (rows.size() > 0) {
     JsonArray first = rows[0];
@@ -274,13 +373,17 @@ bool fetchSheetData() {
 
   for (int i = startIdx; i < rows.size() && row_count < MAX_ROWS; i++) {
     JsonArray r = rows[i];
-    String m = (r.size() >= 1 && !r[0].isNull()) ? String((const char*)r[0]) : "";
-    String v = (r.size() >= 2 && !r[1].isNull()) ? String((const char*)r[1]) : "";
+    String m     = (r.size() >= 1 && !r[0].isNull()) ? String((const char*)r[0]) : "";
+    String v     = (r.size() >= 2 && !r[1].isNull()) ? String((const char*)r[1]) : "";
+    String icon  = (r.size() >= 3 && !r[2].isNull()) ? String((const char*)r[2]) : "";
+    String color = (r.size() >= 4 && !r[3].isNull()) ? String((const char*)r[3]) : "";
 
-    if (m.length() == 0 && v.length() == 0) continue;
+    if (m.length() == 0 && v.length() == 0 && icon.length() == 0 && color.length() == 0) continue;
 
-    metrics[row_count]   = m;
-    valuesArr[row_count] = v;
+    metrics[row_count]     = m;
+    valuesArr[row_count]   = v;
+    iconCodeArr[row_count] = icon;
+    colorCodeArr[row_count]= color;
     row_count++;
   }
 
@@ -290,6 +393,32 @@ bool fetchSheetData() {
   return (row_count > 0);
 }
 
+// ─── Auto Brightness from LDR ────────────────────────────────────────────────
+void updateBrightnessFromLDR() {
+  static unsigned long lastUpdate = 0;
+  unsigned long now = millis();
+  if (now - lastUpdate < 1000) return;
+  lastUpdate = now;
+
+  int raw = analogRead(PIN_LDR);
+  Serial.print("LDR raw: ");
+  Serial.println(raw);
+
+  int clamped = raw;
+  if (clamped < LDR_DARK)   clamped = LDR_DARK;
+  if (clamped > LDR_BRIGHT) clamped = LDR_BRIGHT;
+
+  int target = map(clamped, LDR_DARK, LDR_BRIGHT, 10, 255);
+  if (target < 10)  target = 10;
+  if (target > 255) target = 255;
+
+  currentBrightness = (uint8_t)((currentBrightness * 3 + target) / 4);
+
+  FastLED.setBrightness(currentBrightness);
+  matrix.setBrightness(currentBrightness);
+  FastLED.show();
+}
+
 // ─── Arduino Setup/Loop ───────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
@@ -297,22 +426,20 @@ void setup() {
 
   Serial.println("\nBooting TC001 custom firmware…");
 
-  // TC001 quirks: turn off buzzer, enable buttons
   pinMode(PIN_BUZZER, INPUT_PULLDOWN);
-  pinMode(27, INPUT_PULLUP);  // middle button
-  pinMode(26, INPUT_PULLUP);  // left button
-  pinMode(14, INPUT_PULLUP);  // right button
+  pinMode(27, INPUT_PULLUP);
+  pinMode(26, INPUT_PULLUP);
+  pinMode(14, INPUT_PULLUP);
 
-  // LED matrix init
   FastLED.addLeds<NEOPIXEL, PIN_LED_MATRIX>(matrixleds, NUM_LEDS);
-  FastLED.setBrightness(255);  // max brightness (FastLED side)
+  currentBrightness = 200;
+  FastLED.setBrightness(currentBrightness);
   matrix.begin();
-  matrix.setBrightness(255);   // max brightness (NeoMatrix/Adafruit_GFX side)
+  matrix.setBrightness(currentBrightness);
 
-  drawText("HELLO");   // sanity check
+  drawText("HELLO");
   delay(1500);
 
-  // WiFi
   Serial.print("Connecting to WiFi: ");
   Serial.println(SECRET_SSID);
   WiFi.begin(SECRET_SSID, SECRET_PASS);
@@ -327,7 +454,7 @@ void setup() {
   drawText("CONNECTED");
   delay(1200);
 
-  client.setInsecure(); // HTTPS without cert validation
+  client.setInsecure();
 
   drawText("FETCHING");
   delay(250);
@@ -346,7 +473,8 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Periodic refresh from Google
+  updateBrightnessFromLDR();
+
   if (now - last_fetch_ms >= fetch_interval_ms) {
     bool ok = fetchSheetData();
     last_fetch_ms = now;
@@ -359,7 +487,6 @@ void loop() {
     }
   }
 
-  // Rotate to next row
   if (row_count > 0 && (now - last_rotate_ms >= rotate_interval_ms)) {
     current_index = (current_index + 1) % row_count;
     showRow(current_index);
