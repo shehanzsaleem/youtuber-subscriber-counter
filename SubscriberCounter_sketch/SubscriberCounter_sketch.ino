@@ -8,7 +8,7 @@
 #include <FastLED.h>
 #include <FastLED_NeoMatrix.h>
 
-#include "secrets.h"  // your #defines: SECRET_SSID, SECRET_PASS, SECRET_SHEETID, SECRET_APIKEY
+#include "secrets.h"  // SECRET_SSID, SECRET_PASS, SECRET_SHEETID, SECRET_APIKEY
 
 // ─── Matrix Config for Ulanzi TC001 ──────────────────────────────────────────
 #define PIN_BUZZER      15
@@ -27,33 +27,35 @@ FastLED_NeoMatrix matrix(
   NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG
 );
 
-// ─── Icons (8x8 bitmaps) ─────────────────────────────────────────────────────
+// ─── Icons (8x8 bitmaps, vertically symmetrical) ─────────────────────────────
 // 1 = lit pixel, 0 = off
-// Use 0bABCDEFGH where A = leftmost bit
+// Bits: 0bABCDEFGH where A = leftmost pixel
 
-// 💪 Dumbbell (for GYM) – 8x8
+// 💪 Dumbbell (for GYM) – vertically symmetrical
 const uint8_t icon_dumbbell[8] = {
-  0b01110011,
-  0b01110011,
-  0b00111111,
-  0b00011110,
-  0b00001110,
-  0b00011110,
-  0b00111111,
-  0b01110011
+  0b00000000, // Row 0 (empty)
+  0b11000011,
+  0b11100111,
+  0b01111110,
+  0b01111110,
+  0b11100111,
+  0b11000011,
+  0b10000001
 };
 
-// ❤️ Heart (for TTE) – 8x8
+
+// ❤️ Heart (for TTE) – vertically symmetrical
 const uint8_t icon_heart[8] = {
-  0b01100110,
-  0b11111111,
-  0b11111111,
-  0b11111111,
-  0b01111110,
-  0b00011100,
-  0b00001000,
-  0b00000000
+  0b00000000, // empty top row
+  0b01100110, // two bumps of the heart
+  0b11111111, // full width
+  0b11111111, // full width
+  0b01111110, // tapering down
+  0b00111100, // taper
+  0b00011000, // sharper bottom
+  0b00000000  // clean finish
 };
+
 
 // ─── WiFi/HTTPS ───────────────────────────────────────────────────────────────
 WiFiClientSecure client;
@@ -107,32 +109,40 @@ void drawText(const String &s) {
   matrix.show();
 }
 
-// Draw 8x8 icon + text to its right
-void drawIconAndText(const uint8_t icon[8], uint16_t color, const String &text) {
-  Serial.print("DISPLAY (icon+text): ");
-  Serial.println(text);
+// Draw 8x8 icon on the left, and a value right-aligned on the right
+void drawIconAndValue(const uint8_t icon[8], uint16_t color, const String &value) {
+  Serial.print("DISPLAY (icon+value): ");
+  Serial.println(value);
 
   matrix.fillScreen(0);
   matrix.setTextWrap(false);
   matrix.setTextSize(1);
   matrix.setTextColor(color);
 
-  // Draw 8x8 icon at left (x=0..7)
+  // Draw 8x8 icon at far left (x=0..7)
   for (int y = 0; y < 8; y++) {
     uint8_t row = icon[y];
     for (int x = 0; x < 8; x++) {
-      // check bit (7-x) so leftmost pixel is highest bit
-      if (row & (1 << (7 - x))) {
+      if (row & (1 << (7 - x))) { // highest bit = leftmost pixel
         matrix.drawPixel(x, y, color);
       }
     }
   }
 
-  // Draw text starting at x=10 so it doesn't touch the icon
-  char buf[32];
-  text.substring(0, sizeof(buf) - 1).toCharArray(buf, sizeof(buf));
+  // Prepare value string
+  char buf[16];
+  value.substring(0, sizeof(buf) - 1).toCharArray(buf, sizeof(buf));
 
-  matrix.setCursor(10, 1);   // y=1 vertical alignment
+  // Measure text width
+  int16_t x1, y1;
+  uint16_t w, h;
+  matrix.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
+
+  // Right-align the value against the far right of the 32px matrix
+  int16_t x = MATRIX_WIDTH - (int16_t)w; // right aligned
+  int16_t y = 1;                         // fixed Y so we don't only see underscores
+
+  matrix.setCursor(x, y);
   matrix.print(buf);
 
   matrix.show();
@@ -145,25 +155,31 @@ void showRow(int idx) {
   String value  = valuesArr[idx];
 
   metric.toUpperCase();
-  value.toUpperCase();
 
-  String line = metric;
-  if (value.length()) {
-    line += " ";
-    line += value;
+  // For icons we only care about the numeric/value string
+  String valStr = value;
+  valStr.trim();
+
+  if (valStr.length() == 0) {
+    valStr = "0";  // fallback
   }
 
-  // Metric-based icon & colour
+  // Metric-based icon & colour, NO "GYM"/"TTE" text, just icon + value
   if (metric == "GYM") {
     // Blue dumbbell
-    drawIconAndText(icon_dumbbell, matrix.Color(0, 0, 255), line);
+    drawIconAndValue(icon_dumbbell, matrix.Color(0, 0, 255), valStr);
   }
   else if (metric == "TTE") {
     // Red heart
-    drawIconAndText(icon_heart, matrix.Color(255, 0, 0), line);
+    drawIconAndValue(icon_heart, matrix.Color(255, 0, 0), valStr);
   }
   else {
-    // Fallback: plain white text
+    // Fallback: plain white "METRIC VALUE"
+    String line = metric;
+    if (value.length()) {
+      line += " ";
+      line += value;
+    }
     drawText(line);
   }
 }
@@ -253,9 +269,9 @@ void setup() {
 
   // LED matrix init
   FastLED.addLeds<NEOPIXEL, PIN_LED_MATRIX>(matrixleds, NUM_LEDS);
-  FastLED.setBrightness(255);       // max brightness (FastLED side)
+  FastLED.setBrightness(255);  // max brightness (FastLED side)
   matrix.begin();
-  matrix.setBrightness(255);        // max brightness (NeoMatrix/Adafruit_GFX side)
+  matrix.setBrightness(255);   // max brightness (NeoMatrix/Adafruit_GFX side)
 
   drawText("HELLO");   // sanity check
   delay(1500);
