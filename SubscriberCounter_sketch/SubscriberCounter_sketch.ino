@@ -27,13 +27,13 @@ FastLED_NeoMatrix matrix(
   NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG
 );
 
-// ─── Icons (8x8 bitmaps, vertically symmetrical) ─────────────────────────────
+// ─── Icons (8x8 bitmaps) ─────────────────────────────────────────────────────
 // 1 = lit pixel, 0 = off
 // Bits: 0bABCDEFGH where A = leftmost pixel
 
-// 💪 Dumbbell (for GYM) – vertically symmetrical
+// 💪 Dumbbell (for GYM)
 const uint8_t icon_dumbbell[8] = {
-  0b00000000, // Row 0 (empty)
+  0b00000000, // empty top row
   0b11000011,
   0b11100111,
   0b01111110,
@@ -43,8 +43,7 @@ const uint8_t icon_dumbbell[8] = {
   0b10000001
 };
 
-
-// ❤️ Heart (for TTE) – vertically symmetrical
+// ❤️ Heart (for TTE)
 const uint8_t icon_heart[8] = {
   0b00000000, // empty top row
   0b01100110, // two bumps of the heart
@@ -55,7 +54,6 @@ const uint8_t icon_heart[8] = {
   0b00011000, // sharper bottom
   0b00000000  // clean finish
 };
-
 
 // ─── WiFi/HTTPS ───────────────────────────────────────────────────────────────
 WiFiClientSecure client;
@@ -91,7 +89,7 @@ String buildSheetsUrl() {
   return url;
 }
 
-// Draw plain text (no icon), for generic metrics / status messages
+// Status / generic text, left-ish
 void drawText(const String &s) {
   Serial.print("DISPLAY (text): ");
   Serial.println(s);
@@ -105,6 +103,32 @@ void drawText(const String &s) {
   s.substring(0, sizeof(buf) - 1).toCharArray(buf, sizeof(buf));
 
   matrix.setCursor(0, 1);  // y=1 looks nicer on 8px height
+  matrix.print(buf);
+  matrix.show();
+}
+
+// Right-aligned text for metric fallback rows (no icon)
+void drawRightAlignedMetricText(const String &s, uint16_t color) {
+  Serial.print("DISPLAY (metric text): ");
+  Serial.println(s);
+
+  matrix.fillScreen(0);
+  matrix.setTextWrap(false);
+  matrix.setTextSize(1);
+  matrix.setTextColor(color);
+
+  char buf[64];
+  s.substring(0, sizeof(buf) - 1).toCharArray(buf, sizeof(buf));
+
+  // Measure width
+  int16_t x1, y1;
+  uint16_t w, h;
+  matrix.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
+
+  int16_t x = MATRIX_WIDTH - (int16_t)w; // right-aligned
+  int16_t y = 1;                         // same baseline as numbers
+
+  matrix.setCursor(x, y);
   matrix.print(buf);
   matrix.show();
 }
@@ -174,13 +198,13 @@ void showRow(int idx) {
     drawIconAndValue(icon_heart, matrix.Color(255, 0, 0), valStr);
   }
   else {
-    // Fallback: plain white "METRIC VALUE"
+    // Fallback: plain white text, right-aligned
     String line = metric;
     if (value.length()) {
       line += " ";
       line += value;
     }
-    drawText(line);
+    drawRightAlignedMetricText(line, matrix.Color(255, 255, 255));
   }
 }
 
