@@ -35,6 +35,10 @@ FastLED_NeoMatrix matrix(
 const int LDR_DARK   = 500;   // tune later
 const int LDR_BRIGHT = 2600;  // tune later
 
+// Brightness limits (0–255 for FastLED)
+const uint8_t MIN_BRIGHTNESS = 1;   // was effectively ~10 before
+const uint8_t MAX_BRIGHTNESS = 200; // lower ceiling so bright isn't blinding
+
 uint8_t currentBrightness = 200;
 
 // ─── Icons (8x8 RGB bitmaps) ─────────────────────────────────────────────────
@@ -397,22 +401,36 @@ bool fetchSheetData() {
 void updateBrightnessFromLDR() {
   static unsigned long lastUpdate = 0;
   unsigned long now = millis();
-  if (now - lastUpdate < 1000) return;
+  if (now - lastUpdate < 1000) return;  // update once per second
   lastUpdate = now;
 
   int raw = analogRead(PIN_LDR);
   Serial.print("LDR raw: ");
   Serial.println(raw);
 
+  // Clamp raw reading into expected range
   int clamped = raw;
   if (clamped < LDR_DARK)   clamped = LDR_DARK;
   if (clamped > LDR_BRIGHT) clamped = LDR_BRIGHT;
 
-  int target = map(clamped, LDR_DARK, LDR_BRIGHT, 10, 255);
-  if (target < 10)  target = 10;
-  if (target > 255) target = 255;
+  // Map LDR to brightness – now with much lower minimum
+  int target = map(
+    clamped,
+    LDR_DARK,   // darkest
+    LDR_BRIGHT, // brightest
+    MIN_BRIGHTNESS,
+    MAX_BRIGHTNESS
+  );
 
+  target = constrain(target, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+
+  // Smoothing (you can make this react faster by changing the weights)
   currentBrightness = (uint8_t)((currentBrightness * 3 + target) / 4);
+
+  Serial.print("Target brightness: ");
+  Serial.print(target);
+  Serial.print(" | Smoothed: ");
+  Serial.println(currentBrightness);
 
   FastLED.setBrightness(currentBrightness);
   matrix.setBrightness(currentBrightness);
